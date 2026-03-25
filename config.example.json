@@ -1,0 +1,16 @@
+{
+  "top_n": 100,
+  "time_start": "2013-04-28",
+  "time_end": "2026-03-25",
+  "vs_currency": "usd",
+  "http_timeout_seconds": 30,
+  "coingecko_api_key": "",
+  "coingecko_base_url": "https://api.coingecko.com/api/v3",
+  "coingecko_request_delay_ms": 2500,
+  "binance_enabled": true,
+  "binance_base_url": "https://api.binance.com",
+  "binance_request_delay_ms": 150,
+  "binance_interval": "1d",
+  "binance_quote_asset": "USDT",
+  "postgres_dsn": "postgres://admin:admin@localhost:5432/coins?sslmode=disable"
+}
