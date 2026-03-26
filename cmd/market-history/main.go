@@ -27,7 +27,7 @@ func main() {
 	endDate := flag.String("end", "", "Override end date in YYYY-MM-DD")
 	outputDir := flag.String("output-dir", "", "Override output directory")
 	enableBinance := flag.Bool("binance", false, "Enable Binance OHLCV collection")
-	binanceInterval := flag.String("binance-interval", "", "Override Binance interval: 1m, 5m, 15m, 1h, 4h, 1d, 1w, 1M")
+	binanceInterval := flag.String("binance-interval", "", "Override Binance interval list, for example: 1h,4h,1d")
 	postgresDSN := flag.String("postgres-dsn", "", "Override PostgreSQL DSN")
 	flag.Parse()
 
@@ -114,9 +114,8 @@ func main() {
 	}
 
 	fmt.Printf(
-		"Completed. Coins: %d, CoinGecko rows: %d, Binance pairs: %d, Binance rows: %d, postgres: %s\n",
+		"Completed. Coins: %d, Binance pairs: %d, Binance rows: %d, postgres: %s\n",
 		summary.CoinsProcessed,
-		summary.CoinGeckoRowsWritten,
 		summary.BinancePairsFound,
 		summary.BinanceRowsWritten,
 		cfg.PostgresDSN,

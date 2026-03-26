@@ -99,13 +99,22 @@ func (c *Client) ExchangeInfo(ctx context.Context) (ExchangeInfo, []byte, error)
 func (c *Client) Klines(ctx context.Context, symbol, interval string, start, end time.Time) ([]Kline, []byte, error) {
 	current := start.UTC()
 	result := make([]Kline, 0, 1024)
+	step, err := intervalStep(interval)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	for !current.After(end) {
+		windowEnd := current.Add(step * maxKlinesPerRequest).Add(-time.Millisecond)
+		if windowEnd.After(end) {
+			windowEnd = end.UTC()
+		}
+
 		query := url.Values{}
 		query.Set("symbol", strings.ToUpper(symbol))
 		query.Set("interval", interval)
 		query.Set("startTime", strconv.FormatInt(current.UnixMilli(), 10))
-		query.Set("endTime", strconv.FormatInt(end.UTC().UnixMilli(), 10))
+		query.Set("endTime", strconv.FormatInt(windowEnd.UnixMilli(), 10))
 		query.Set("limit", strconv.Itoa(maxKlinesPerRequest))
 
 		body, err := c.doRequest(ctx, http.MethodGet, "/api/v3/klines", query)
@@ -118,7 +127,8 @@ func (c *Client) Klines(ctx context.Context, symbol, interval string, start, end
 			return nil, body, err
 		}
 		if len(klines) == 0 {
-			break
+			current = windowEnd.Add(time.Millisecond)
+			continue
 		}
 
 		result = append(result, klines...)
@@ -285,6 +295,43 @@ func asFloat64(value interface{}) (float64, error) {
 		return typed, nil
 	default:
 		return 0, fmt.Errorf("unexpected type %T", value)
+	}
+}
+
+func intervalStep(interval string) (time.Duration, error) {
+	switch interval {
+	case "1s":
+		return time.Second, nil
+	case "1m":
+		return time.Minute, nil
+	case "3m":
+		return 3 * time.Minute, nil
+	case "5m":
+		return 5 * time.Minute, nil
+	case "15m":
+		return 15 * time.Minute, nil
+	case "30m":
+		return 30 * time.Minute, nil
+	case "1h":
+		return time.Hour, nil
+	case "2h":
+		return 2 * time.Hour, nil
+	case "4h":
+		return 4 * time.Hour, nil
+	case "6h":
+		return 6 * time.Hour, nil
+	case "8h":
+		return 8 * time.Hour, nil
+	case "12h":
+		return 12 * time.Hour, nil
+	case "1d":
+		return 24 * time.Hour, nil
+	case "3d":
+		return 72 * time.Hour, nil
+	case "1w":
+		return 7 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unsupported interval step: %s", interval)
 	}
 }
 

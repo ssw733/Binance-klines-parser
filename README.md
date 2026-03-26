@@ -1,12 +1,12 @@
 # AI Trading Market Data Collector
 
-Go-проект для загрузки полной исторической выборки по TOP N криптомонетам без платного CoinMarketCap с сохранением в `PostgreSQL`.
+Go-проект для загрузки полной исторической выборки по TOP N криптомонетам с сохранением в `PostgreSQL`.
 
 Основная схема:
 
-- `CoinGecko` для списка топ-монет и исторических рядов `price / market_cap / total_volume`
-- `Binance` как опциональный источник биржевых свечей `OHLCV` для пар вроде `BTCUSDT`
-- `PostgreSQL` для нормализованных временных рядов и метаданных загрузок
+- `CoinGecko` только для списка топ-монет и метаданных
+- `Binance` как источник исторических свечей `OHLCV`
+- `PostgreSQL` для таблиц по интервалам и метаданных запусков
 
 ## Что именно собираем
 
@@ -15,39 +15,18 @@ Go-проект для загрузки полной исторической в
 Через `coins/markets`:
 
 - top N монет по market cap
-- symbol, name, rank, market cap, volume
+- `symbol`, `name`, `rank`, `market cap`, `volume`
 
-Через `coins/{id}/market_chart/range`:
-
-- исторический `price`
-- исторический `market_cap`
-- исторический `total_volume`
-
-Это хороший бесплатный базовый датасет для обучения модели на уровне всего рынка.
+Исторические ряды из CoinGecko больше не запрашиваются.
 
 ### Binance
 
-Если включен `binance_enabled`, проект дополнительно:
+Если включен `binance_enabled`, проект:
 
 1. Загружает `exchangeInfo`
 2. Ищет spot-пары с нужной котировкой, например `USDT`
 3. Для найденных пар тянет `klines` пагинацией по всему диапазону дат
-
-Это дает уже настоящие биржевые свечи `open/high/low/close/volume`.
-
-## Структура
-
-```text
-.
-├── cmd/market-history
-├── internal/binance
-├── internal/coingecko
-├── internal/config
-├── internal/pipeline
-├── internal/storage
-├── config.example.json
-└── .env.example
-```
+4. Складывает свечи в отдельные таблицы по интервалам
 
 ## База данных
 
@@ -55,31 +34,18 @@ Go-проект для загрузки полной исторической в
 
 - `ingestion_runs`
 - `coins`
-- `coingecko_market_data`
-- `binance_klines`
+- `binance_klines_1h`
+- `binance_klines_4h`
+- `binance_klines_1d`
 
-SQL-схема лежит в [001_init.sql](/home/alexander/AI_trading/sql/001_init.sql), а приложение умеет автоматически создать таблицы при запуске.
-Перед каждым запуском приложение дропает свои рабочие таблицы и создает их заново, поэтому база для этого парсера всегда начинается с чистого состояния.
-
-Для локального старта добавлен [docker-compose.yml](/home/alexander/AI_trading/docker-compose.yml):
-
-```bash
-docker compose up -d
-```
+SQL-схема лежит в [001_init.sql](/home/alexander/AI_trading/sql/001_init.sql), а приложение автоматически дропает свои рабочие таблицы и создает их заново перед запуском.
 
 ## Запуск
 
-Минимальный запуск только с CoinGecko:
+Основной запуск:
 
 ```bash
-go run ./cmd/market-history -top 50 -start 2018-01-01 -end 2026-03-25 \
-  -postgres-dsn 'postgres://admin:admin@localhost:5432/coins?sslmode=disable'
-```
-
-С Binance:
-
-```bash
-go run ./cmd/market-history -top 50 -start 2018-01-01 -end 2026-03-25 -binance -binance-interval 1d \
+go run ./cmd/market-history -top 50 -start 2018-01-01 -end 2026-03-26 -binance -binance-interval 1h,4h,1d \
   -postgres-dsn 'postgres://admin:admin@localhost:5432/coins?sslmode=disable'
 ```
 
@@ -91,20 +57,17 @@ go run ./cmd/market-history -config ./config.example.json
 
 ## Что сохраняется в Postgres
 
-`coingecko_market_data`:
+`coins`:
 
-- `coin_id`
+- `id`
 - `symbol`
 - `name`
-- `vs_currency`
-- `ts`
-- `price`
-- `market_cap`
-- `total_volume`
-- `source_rank`
-- `run_id`
+- `market_cap_rank`
+- `current_market_cap`
+- `current_total_volume`
+- `current_price`
 
-`binance_klines`:
+`binance_klines_1h`, `binance_klines_4h`, `binance_klines_1d`:
 
 - `symbol_pair`
 - `interval`
@@ -126,16 +89,8 @@ go run ./cmd/market-history -config ./config.example.json
 
 ## Практические замечания
 
-- У `CoinGecko` бесплатный план ограничен rate limit и месячной квотой, поэтому в конфиге уже заложена пауза между запросами.
-- `CoinGecko` и `Binance` дают разные типы данных: агрегированный рыночный ряд и данные конкретной биржи. Для обучения это скорее плюс, чем минус.
-- Не каждая топ-монета торгуется на Binance в паре `USDT`, поэтому часть активов будет только в `CoinGecko`.
-- `TOP N` фиксируется на дату запуска. Если позже понадобится исторический состав рынка по датам, это будет отдельный snapshot-пайплайн.
-- Запись идет через `upsert`, поэтому повторный запуск не создает дубликаты по ключевым временным точкам.
-
-## Что логично делать дальше
-
-Следующий сильный шаг для проекта:
-
-1. добавить инкрементальные дозагрузки вместо полной перезаписи CSV
-2. добавить DuckDB/Parquet как формат для обучения
-3. добавить feature engineering поверх `silver` слоя
+- `CoinGecko` используется только для списка монет и метаданных, поэтому лимиты мешают заметно меньше.
+- Не каждая топ-монета торгуется на Binance в паре `USDT`, поэтому часть активов останется только в таблице `coins`.
+- `BINANCE_INTERVAL` поддерживает список интервалов через запятую: `1h,4h,1d`
+- Для хранения сейчас поддерживаются интервалы `1h`, `4h`, `1d`
+- Есть защита от слишком ранней даты старта: по умолчанию `MIN_START_DATE=2017-01-01`

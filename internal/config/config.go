@@ -13,15 +13,16 @@ const (
 	defaultOutputDir          = "data"
 	defaultTopN               = 100
 	defaultVsCurrency         = "usd"
-	defaultHTTPTimeoutSeconds = 30
+	defaultHTTPTimeoutSeconds = 90
 	defaultHistoryStart       = "2013-04-28"
 	defaultCoinGeckoBaseURL   = "https://api.coingecko.com/api/v3"
 	defaultBinanceBaseURL     = "https://api.binance.com"
 	defaultCoinGeckoDelayMS   = 2500
 	defaultBinanceDelayMS     = 150
-	defaultBinanceInterval    = "1d"
+	defaultBinanceInterval    = "1h,4h,1d"
 	defaultBinanceQuoteAsset  = "USDT"
 	defaultPostgresDSN        = "postgres://admin:admin@localhost:5432/coins?sslmode=disable"
+	defaultMinStartDate       = "2017-01-01"
 )
 
 type Config struct {
@@ -40,6 +41,7 @@ type Config struct {
 	BinanceInterval         string `json:"binance_interval"`
 	BinanceQuoteAsset       string `json:"binance_quote_asset"`
 	PostgresDSN             string `json:"postgres_dsn"`
+	MinStartDate            string `json:"min_start_date"`
 }
 
 func Load(path string) (Config, error) {
@@ -59,6 +61,7 @@ func Load(path string) (Config, error) {
 		BinanceInterval:         envOrDefault("BINANCE_INTERVAL", defaultBinanceInterval),
 		BinanceQuoteAsset:       envOrDefault("BINANCE_QUOTE_ASSET", defaultBinanceQuoteAsset),
 		PostgresDSN:             envOrDefault("POSTGRES_DSN", defaultPostgresDSN),
+		MinStartDate:            envOrDefault("MIN_START_DATE", defaultMinStartDate),
 	}
 
 	if path == "" {
@@ -93,9 +96,16 @@ func (c Config) Validate() error {
 	if err != nil {
 		return fmt.Errorf("time_start must be YYYY-MM-DD: %w", err)
 	}
+	minStart, err := time.Parse(time.DateOnly, c.MinStartDate)
+	if err != nil {
+		return fmt.Errorf("min_start_date must be YYYY-MM-DD: %w", err)
+	}
 	end, err := time.Parse(time.DateOnly, c.TimeEnd)
 	if err != nil {
 		return fmt.Errorf("time_end must be YYYY-MM-DD: %w", err)
+	}
+	if start.Before(minStart) {
+		return fmt.Errorf("time_start %s is earlier than allowed minimum %s", c.TimeStart, c.MinStartDate)
 	}
 	if start.After(end) {
 		return errors.New("time_start must be less than or equal to time_end")
@@ -163,6 +173,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.PostgresDSN != "" {
 		dst.PostgresDSN = src.PostgresDSN
+	}
+	if src.MinStartDate != "" {
+		dst.MinStartDate = src.MinStartDate
 	}
 }
 

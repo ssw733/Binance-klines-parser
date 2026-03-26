@@ -14,20 +14,6 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
-type CoinGeckoRow struct {
-	CoinID      string
-	Symbol      string
-	Name        string
-	VsCurrency  string
-	Timestamp   time.Time
-	Price       float64
-	MarketCap   float64
-	TotalVolume float64
-	IngestedAt  time.Time
-	Source      string
-	SourceRank  int
-}
-
 type BinanceRow struct {
 	SymbolPair               string
 	BaseAsset                string
@@ -57,8 +43,19 @@ type RunInput struct {
 	BinanceEnabled bool
 }
 
+var supportedIntervalTables = map[string]string{
+	"1h": "binance_klines_1h",
+	"4h": "binance_klines_4h",
+	"1d": "binance_klines_1d",
+}
+
 func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
+}
+
+func IsSupportedInterval(interval string) bool {
+	_, ok := supportedIntervalTables[interval]
+	return ok
 }
 
 func (s *PostgresStore) Init(ctx context.Context) error {
@@ -115,14 +112,6 @@ func (s *PostgresStore) FinishRun(ctx context.Context, runID int64, errMessage s
 	if err != nil {
 		return fmt.Errorf("finish ingestion run: %w", err)
 	}
-	return nil
-}
-
-func (s *PostgresStore) SaveCoinGeckoTopCoins(ctx context.Context, runID int64, raw []byte, fetchedAt time.Time) error {
-	return nil
-}
-
-func (s *PostgresStore) SaveCoinGeckoMarketChartRaw(ctx context.Context, runID int64, symbol string, raw []byte, timeStart, timeEnd, vsCurrency string) error {
 	return nil
 }
 
@@ -185,67 +174,6 @@ func (s *PostgresStore) SaveCoinMetadata(ctx context.Context, runID int64, coins
 	return nil
 }
 
-func (s *PostgresStore) SaveCoinGeckoRows(ctx context.Context, runID int64, rows []CoinGeckoRow) (int, error) {
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	const query = `
-		INSERT INTO coingecko_market_data (
-			coin_id, symbol, name, vs_currency, ts, price, market_cap, total_volume,
-			source_rank, run_id, ingested_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11
-		)
-		ON CONFLICT (coin_id, vs_currency, ts) DO UPDATE SET
-			symbol = EXCLUDED.symbol,
-			name = EXCLUDED.name,
-			price = EXCLUDED.price,
-			market_cap = EXCLUDED.market_cap,
-			total_volume = EXCLUDED.total_volume,
-			source_rank = EXCLUDED.source_rank,
-			run_id = EXCLUDED.run_id,
-			ingested_at = EXCLUDED.ingested_at
-	`
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin CoinGecko rows tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, query)
-	if err != nil {
-		return 0, fmt.Errorf("prepare CoinGecko rows stmt: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, row := range rows {
-		if _, err := stmt.ExecContext(
-			ctx,
-			row.CoinID,
-			row.Symbol,
-			row.Name,
-			strings.ToLower(row.VsCurrency),
-			row.Timestamp.UTC(),
-			row.Price,
-			row.MarketCap,
-			row.TotalVolume,
-			row.SourceRank,
-			runID,
-			row.IngestedAt.UTC(),
-		); err != nil {
-			return 0, fmt.Errorf("insert CoinGecko row: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit CoinGecko rows tx: %w", err)
-	}
-	return len(rows), nil
-}
-
 func (s *PostgresStore) SaveBinanceExchangeInfo(ctx context.Context, runID int64, raw []byte, fetchedAt time.Time) error {
 	return nil
 }
@@ -259,8 +187,13 @@ func (s *PostgresStore) SaveBinanceRows(ctx context.Context, runID int64, rows [
 		return 0, nil
 	}
 
-	const query = `
-		INSERT INTO binance_klines (
+	tableName, err := tableNameForInterval(rows[0].Interval)
+	if err != nil {
+		return 0, err
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (
 			symbol_pair, interval, open_time, close_time, base_asset, quote_asset, coingecko_id,
 			open, high, low, close, volume, quote_asset_volume, trades,
 			taker_buy_base_asset_volume, taker_buy_quote_asset_volume, run_id, ingested_at
@@ -285,7 +218,7 @@ func (s *PostgresStore) SaveBinanceRows(ctx context.Context, runID int64, rows [
 			taker_buy_quote_asset_volume = EXCLUDED.taker_buy_quote_asset_volume,
 			run_id = EXCLUDED.run_id,
 			ingested_at = EXCLUDED.ingested_at
-	`
+	`, tableName)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -359,24 +292,7 @@ CREATE TABLE IF NOT EXISTS coins (
 	updated_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS coingecko_market_data (
-	coin_id TEXT NOT NULL REFERENCES coins(id) ON DELETE CASCADE,
-	symbol TEXT NOT NULL,
-	name TEXT NOT NULL,
-	vs_currency TEXT NOT NULL,
-	ts TIMESTAMPTZ NOT NULL,
-	price DOUBLE PRECISION,
-	market_cap DOUBLE PRECISION,
-	total_volume DOUBLE PRECISION,
-	source_rank INTEGER,
-	run_id BIGINT NOT NULL REFERENCES ingestion_runs(id) ON DELETE CASCADE,
-	ingested_at TIMESTAMPTZ NOT NULL,
-	PRIMARY KEY (coin_id, vs_currency, ts)
-);
-
-CREATE INDEX IF NOT EXISTS idx_coingecko_symbol_ts ON coingecko_market_data(symbol, ts);
-
-CREATE TABLE IF NOT EXISTS binance_klines (
+CREATE TABLE IF NOT EXISTS binance_klines_1h (
 	symbol_pair TEXT NOT NULL,
 	interval TEXT NOT NULL,
 	open_time TIMESTAMPTZ NOT NULL,
@@ -398,12 +314,71 @@ CREATE TABLE IF NOT EXISTS binance_klines (
 	PRIMARY KEY (symbol_pair, interval, open_time)
 );
 
-CREATE INDEX IF NOT EXISTS idx_binance_base_open_time ON binance_klines(base_asset, open_time);
+CREATE INDEX IF NOT EXISTS idx_binance_1h_base_open_time ON binance_klines_1h(base_asset, open_time);
+
+CREATE TABLE IF NOT EXISTS binance_klines_4h (
+	symbol_pair TEXT NOT NULL,
+	interval TEXT NOT NULL,
+	open_time TIMESTAMPTZ NOT NULL,
+	close_time TIMESTAMPTZ NOT NULL,
+	base_asset TEXT NOT NULL,
+	quote_asset TEXT NOT NULL,
+	coingecko_id TEXT REFERENCES coins(id) ON DELETE SET NULL,
+	open DOUBLE PRECISION NOT NULL,
+	high DOUBLE PRECISION NOT NULL,
+	low DOUBLE PRECISION NOT NULL,
+	close DOUBLE PRECISION NOT NULL,
+	volume DOUBLE PRECISION NOT NULL,
+	quote_asset_volume DOUBLE PRECISION NOT NULL,
+	trades BIGINT NOT NULL,
+	taker_buy_base_asset_volume DOUBLE PRECISION NOT NULL,
+	taker_buy_quote_asset_volume DOUBLE PRECISION NOT NULL,
+	run_id BIGINT NOT NULL REFERENCES ingestion_runs(id) ON DELETE CASCADE,
+	ingested_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (symbol_pair, interval, open_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_4h_base_open_time ON binance_klines_4h(base_asset, open_time);
+
+CREATE TABLE IF NOT EXISTS binance_klines_1d (
+	symbol_pair TEXT NOT NULL,
+	interval TEXT NOT NULL,
+	open_time TIMESTAMPTZ NOT NULL,
+	close_time TIMESTAMPTZ NOT NULL,
+	base_asset TEXT NOT NULL,
+	quote_asset TEXT NOT NULL,
+	coingecko_id TEXT REFERENCES coins(id) ON DELETE SET NULL,
+	open DOUBLE PRECISION NOT NULL,
+	high DOUBLE PRECISION NOT NULL,
+	low DOUBLE PRECISION NOT NULL,
+	close DOUBLE PRECISION NOT NULL,
+	volume DOUBLE PRECISION NOT NULL,
+	quote_asset_volume DOUBLE PRECISION NOT NULL,
+	trades BIGINT NOT NULL,
+	taker_buy_base_asset_volume DOUBLE PRECISION NOT NULL,
+	taker_buy_quote_asset_volume DOUBLE PRECISION NOT NULL,
+	run_id BIGINT NOT NULL REFERENCES ingestion_runs(id) ON DELETE CASCADE,
+	ingested_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (symbol_pair, interval, open_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_binance_1d_base_open_time ON binance_klines_1d(base_asset, open_time);
 `
 
 const dropSchemaSQL = `
+DROP TABLE IF EXISTS binance_klines_1h;
+DROP TABLE IF EXISTS binance_klines_4h;
+DROP TABLE IF EXISTS binance_klines_1d;
 DROP TABLE IF EXISTS binance_klines;
 DROP TABLE IF EXISTS coingecko_market_data;
 DROP TABLE IF EXISTS coins;
 DROP TABLE IF EXISTS ingestion_runs;
 `
+
+func tableNameForInterval(interval string) (string, error) {
+	tableName, ok := supportedIntervalTables[interval]
+	if !ok {
+		return "", fmt.Errorf("unsupported interval for storage table: %s", interval)
+	}
+	return tableName, nil
+}

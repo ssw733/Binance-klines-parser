@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 
 type GeckoClient interface {
 	TopCoins(ctx context.Context, topN int, vsCurrency string) ([]coingecko.Coin, []byte, error)
-	MarketChartRange(ctx context.Context, coinID, vsCurrency string, from, to time.Time) (coingecko.MarketChart, []byte, error)
 }
 
 type BinanceClient interface {
@@ -28,7 +26,6 @@ type DataStore interface {
 	StartRun(ctx context.Context, input storage.RunInput) (int64, error)
 	FinishRun(ctx context.Context, runID int64, errMessage string) error
 	SaveCoinMetadata(ctx context.Context, runID int64, coins []coingecko.Coin, fetchedAt time.Time) error
-	SaveCoinGeckoRows(ctx context.Context, runID int64, rows []storage.CoinGeckoRow) (int, error)
 	SaveBinanceRows(ctx context.Context, runID int64, rows []storage.BinanceRow) (int, error)
 }
 
@@ -50,10 +47,9 @@ type RunConfig struct {
 }
 
 type Summary struct {
-	CoinsProcessed       int
-	CoinGeckoRowsWritten int
-	BinancePairsFound    int
-	BinanceRowsWritten   int
+	CoinsProcessed     int
+	BinancePairsFound  int
+	BinanceRowsWritten int
 }
 
 func NewService(gecko GeckoClient, binanceClient BinanceClient, store DataStore, logger *log.Logger) *Service {
@@ -98,8 +94,7 @@ func (s *Service) Run(ctx context.Context, cfg RunConfig) (Summary, error) {
 	}()
 
 	fetchedAt := time.Now().UTC()
-	coins, rawCoins, err := s.gecko.TopCoins(ctx, cfg.TopN, cfg.VsCurrency)
-	_ = rawCoins
+	coins, _, err := s.gecko.TopCoins(ctx, cfg.TopN, cfg.VsCurrency)
 	if err != nil {
 		runErr = fmt.Errorf("fetch CoinGecko top coins: %w", err)
 		return Summary{}, runErr
@@ -110,18 +105,23 @@ func (s *Service) Run(ctx context.Context, cfg RunConfig) (Summary, error) {
 		return Summary{}, runErr
 	}
 
-	var pairMap map[string]string
-	summary := Summary{}
-
-	if cfg.BinanceEnabled && s.binance != nil {
-		exchangeInfo, rawExchangeInfo, err := s.binance.ExchangeInfo(ctx)
-		_ = rawExchangeInfo
-		if err != nil {
-			runErr = fmt.Errorf("fetch Binance exchange info: %w", err)
-			return Summary{}, runErr
-		}
-		pairMap = buildPairMap(exchangeInfo.Symbols, cfg.BinanceQuote)
+	summary := Summary{CoinsProcessed: len(coins)}
+	if !cfg.BinanceEnabled || s.binance == nil {
+		return summary, nil
 	}
+
+	intervals, err := parseIntervals(cfg.BinanceInterval)
+	if err != nil {
+		runErr = err
+		return Summary{}, runErr
+	}
+
+	exchangeInfo, _, err := s.binance.ExchangeInfo(ctx)
+	if err != nil {
+		runErr = fmt.Errorf("fetch Binance exchange info: %w", err)
+		return Summary{}, runErr
+	}
+	pairMap := buildPairMap(exchangeInfo.Symbols, cfg.BinanceQuote)
 
 	for _, coin := range coins {
 		select {
@@ -131,104 +131,33 @@ func (s *Service) Run(ctx context.Context, cfg RunConfig) (Summary, error) {
 		default:
 		}
 
-		s.logger.Printf("fetching CoinGecko market chart for %s (%s), rank=%d", strings.ToUpper(coin.Symbol), coin.ID, coin.MarketCapRank)
-
-		chart, rawChart, err := s.gecko.MarketChartRange(ctx, coin.ID, cfg.VsCurrency, from, to)
-		_ = rawChart
-		if err != nil {
-			runErr = fmt.Errorf("fetch CoinGecko history for %s: %w", coin.Symbol, err)
-			return summary, runErr
-		}
-
-		geckoRows := normalizeCoinGecko(coin, chart, cfg.VsCurrency, fetchedAt)
-		written, err := s.store.SaveCoinGeckoRows(ctx, runID, geckoRows)
-		if err != nil {
-			runErr = fmt.Errorf("save CoinGecko rows for %s: %w", coin.Symbol, err)
-			return summary, runErr
-		}
-
-		summary.CoinsProcessed++
-		summary.CoinGeckoRowsWritten += written
-
-		if !cfg.BinanceEnabled || s.binance == nil {
-			continue
-		}
-
 		pair := pairMap[strings.ToUpper(coin.Symbol)]
 		if pair == "" {
 			continue
 		}
 
 		summary.BinancePairsFound++
-		s.logger.Printf("fetching Binance klines for %s", pair)
 
-		klines, rawKlines, err := s.binance.Klines(ctx, pair, cfg.BinanceInterval, from, to)
-		_ = rawKlines
-		if err != nil {
-			runErr = fmt.Errorf("fetch Binance klines for %s: %w", pair, err)
-			return summary, runErr
-		}
+		for _, interval := range intervals {
+			s.logger.Printf("fetching Binance klines for %s interval=%s", pair, interval)
 
-		binanceRows := normalizeBinanceRows(pair, coin, cfg.BinanceQuote, cfg.BinanceInterval, klines, fetchedAt)
-		written, err = s.store.SaveBinanceRows(ctx, runID, binanceRows)
-		if err != nil {
-			runErr = fmt.Errorf("save Binance rows for %s: %w", pair, err)
-			return summary, runErr
+			klines, _, err := s.binance.Klines(ctx, pair, interval, from, to)
+			if err != nil {
+				runErr = fmt.Errorf("fetch Binance klines for %s interval %s: %w", pair, interval, err)
+				return summary, runErr
+			}
+
+			binanceRows := normalizeBinanceRows(pair, coin, cfg.BinanceQuote, interval, klines, fetchedAt)
+			written, err := s.store.SaveBinanceRows(ctx, runID, binanceRows)
+			if err != nil {
+				runErr = fmt.Errorf("save Binance rows for %s interval %s: %w", pair, interval, err)
+				return summary, runErr
+			}
+			summary.BinanceRowsWritten += written
 		}
-		summary.BinanceRowsWritten += written
 	}
 
 	return summary, nil
-}
-
-func normalizeCoinGecko(coin coingecko.Coin, chart coingecko.MarketChart, vsCurrency string, ingestedAt time.Time) []storage.CoinGeckoRow {
-	valuesByTime := map[int64]*storage.CoinGeckoRow{}
-
-	getOrCreate := func(ts time.Time) *storage.CoinGeckoRow {
-		key := ts.UTC().UnixMilli()
-		if row, ok := valuesByTime[key]; ok {
-			return row
-		}
-
-		row := &storage.CoinGeckoRow{
-			CoinID:     coin.ID,
-			Symbol:     strings.ToUpper(coin.Symbol),
-			Name:       coin.Name,
-			VsCurrency: strings.ToLower(vsCurrency),
-			Timestamp:  ts.UTC(),
-			IngestedAt: ingestedAt.UTC(),
-			Source:     "coingecko",
-			SourceRank: coin.MarketCapRank,
-		}
-		valuesByTime[key] = row
-		return row
-	}
-
-	for _, point := range chart.Prices {
-		row := getOrCreate(point.Time)
-		row.Price = point.Value
-	}
-	for _, point := range chart.MarketCaps {
-		row := getOrCreate(point.Time)
-		row.MarketCap = point.Value
-	}
-	for _, point := range chart.TotalVolumes {
-		row := getOrCreate(point.Time)
-		row.TotalVolume = point.Value
-	}
-
-	keys := make([]int64, 0, len(valuesByTime))
-	for key := range valuesByTime {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-
-	rows := make([]storage.CoinGeckoRow, 0, len(keys))
-	for _, key := range keys {
-		rows = append(rows, *valuesByTime[key])
-	}
-
-	return rows
 }
 
 func normalizeBinanceRows(pair string, coin coingecko.Coin, quoteAsset, interval string, klines []binance.Kline, ingestedAt time.Time) []storage.BinanceRow {
@@ -286,4 +215,31 @@ func parseDateRange(startDate, endDate string) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, fmt.Errorf("parse end date: %w", err)
 	}
 	return start.UTC(), end.UTC().Add(24*time.Hour - time.Second), nil
+}
+
+func parseIntervals(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	intervals := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+
+	for _, part := range parts {
+		interval := strings.TrimSpace(part)
+		if interval == "" {
+			continue
+		}
+		if _, exists := seen[interval]; exists {
+			continue
+		}
+		if !storage.IsSupportedInterval(interval) {
+			return nil, fmt.Errorf("unsupported Binance interval for table storage: %s", interval)
+		}
+		seen[interval] = struct{}{}
+		intervals = append(intervals, interval)
+	}
+
+	if len(intervals) == 0 {
+		return nil, fmt.Errorf("no Binance intervals configured")
+	}
+
+	return intervals, nil
 }
