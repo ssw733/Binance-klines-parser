@@ -12,19 +12,14 @@ Go-проект для загрузки полной исторической в
 
 ### CoinGecko
 
-Через `coins/markets`:
-
-- top N монет по market cap
-- `symbol`, `name`, `rank`, `market cap`, `volume`
-
-Исторические ряды из CoinGecko больше не запрашиваются.
+Используется только как fallback, если Binance-режим выключен.
 
 ### Binance
 
 Если включен `binance_enabled`, проект:
 
 1. Загружает `exchangeInfo`
-2. Ищет spot-пары с нужной котировкой, например `USDT`
+2. Берет все spot-монеты Binance с нужной котировкой, например `USDT`
 3. Для найденных пар тянет `klines` пагинацией по всему диапазону дат
 4. Складывает свечи в отдельные таблицы по интервалам
 
@@ -34,7 +29,6 @@ Go-проект для загрузки полной исторической в
 
 - `ingestion_runs`
 - `coins`
-- `binance_klines_1h`
 - `binance_klines_4h`
 - `binance_klines_1d`
 
@@ -45,7 +39,7 @@ SQL-схема лежит в [001_init.sql](/home/alexander/AI_trading/sql/001_i
 Основной запуск:
 
 ```bash
-go run ./cmd/market-history -top 50 -start 2018-01-01 -end 2026-03-26 -binance -binance-interval 1h,4h,1d \
+go run ./cmd/market-history -start 2018-01-01 -end 2026-04-01 -binance -binance-interval 4h,1d \
   -postgres-dsn 'postgres://admin:admin@localhost:5432/coins?sslmode=disable'
 ```
 
@@ -67,7 +61,7 @@ go run ./cmd/market-history -config ./config.example.json
 - `current_total_volume`
 - `current_price`
 
-`binance_klines_1h`, `binance_klines_4h`, `binance_klines_1d`:
+`binance_klines_4h`, `binance_klines_1d`:
 
 - `symbol_pair`
 - `interval`
@@ -90,7 +84,7 @@ go run ./cmd/market-history -config ./config.example.json
 ## Практические замечания
 
 - `CoinGecko` используется только для списка монет и метаданных, поэтому лимиты мешают заметно меньше.
-- Не каждая топ-монета торгуется на Binance в паре `USDT`, поэтому часть активов останется только в таблице `coins`.
-- `BINANCE_INTERVAL` поддерживает список интервалов через запятую: `1h,4h,1d`
-- Для хранения сейчас поддерживаются интервалы `1h`, `4h`, `1d`
+- В `Binance`-режиме universe монет берется не из `top`, а из всех доступных Binance spot-пар с нужной котировкой.
+- `BINANCE_INTERVAL` поддерживает список интервалов через запятую: `4h,1d`
+- Для хранения сейчас поддерживаются интервалы `4h`, `1d`
 - Есть защита от слишком ранней даты старта: по умолчанию `MIN_START_DATE=2017-01-01`

@@ -27,7 +27,7 @@ func main() {
 	endDate := flag.String("end", "", "Override end date in YYYY-MM-DD")
 	outputDir := flag.String("output-dir", "", "Override output directory")
 	enableBinance := flag.Bool("binance", false, "Enable Binance OHLCV collection")
-	binanceInterval := flag.String("binance-interval", "", "Override Binance interval list, for example: 1h,4h,1d")
+	binanceInterval := flag.String("binance-interval", "", "Override Binance interval list, for example: 4h,1d")
 	postgresDSN := flag.String("postgres-dsn", "", "Override PostgreSQL DSN")
 	flag.Parse()
 

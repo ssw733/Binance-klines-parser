@@ -19,7 +19,7 @@ const (
 	defaultBinanceBaseURL     = "https://api.binance.com"
 	defaultCoinGeckoDelayMS   = 2500
 	defaultBinanceDelayMS     = 150
-	defaultBinanceInterval    = "1h,4h,1d"
+	defaultBinanceInterval    = "4h,1d"
 	defaultBinanceQuoteAsset  = "USDT"
 	defaultPostgresDSN        = "postgres://admin:admin@localhost:5432/coins?sslmode=disable"
 	defaultMinStartDate       = "2017-01-01"

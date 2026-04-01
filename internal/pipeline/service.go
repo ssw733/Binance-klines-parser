@@ -94,10 +94,23 @@ func (s *Service) Run(ctx context.Context, cfg RunConfig) (Summary, error) {
 	}()
 
 	fetchedAt := time.Now().UTC()
-	coins, _, err := s.gecko.TopCoins(ctx, cfg.TopN, cfg.VsCurrency)
-	if err != nil {
-		runErr = fmt.Errorf("fetch CoinGecko top coins: %w", err)
-		return Summary{}, runErr
+	var coins []coingecko.Coin
+	var pairMap map[string]string
+
+	if cfg.BinanceEnabled && s.binance != nil {
+		exchangeInfo, _, err := s.binance.ExchangeInfo(ctx)
+		if err != nil {
+			runErr = fmt.Errorf("fetch Binance exchange info: %w", err)
+			return Summary{}, runErr
+		}
+		pairMap = buildPairMap(exchangeInfo.Symbols, cfg.BinanceQuote)
+		coins = coinsFromBinancePairs(pairMap)
+	} else {
+		coins, _, err = s.gecko.TopCoins(ctx, cfg.TopN, cfg.VsCurrency)
+		if err != nil {
+			runErr = fmt.Errorf("fetch CoinGecko top coins: %w", err)
+			return Summary{}, runErr
+		}
 	}
 
 	if err := s.store.SaveCoinMetadata(ctx, runID, coins, fetchedAt); err != nil {
@@ -115,13 +128,6 @@ func (s *Service) Run(ctx context.Context, cfg RunConfig) (Summary, error) {
 		runErr = err
 		return Summary{}, runErr
 	}
-
-	exchangeInfo, _, err := s.binance.ExchangeInfo(ctx)
-	if err != nil {
-		runErr = fmt.Errorf("fetch Binance exchange info: %w", err)
-		return Summary{}, runErr
-	}
-	pairMap := buildPairMap(exchangeInfo.Symbols, cfg.BinanceQuote)
 
 	for _, coin := range coins {
 		select {
@@ -242,4 +248,26 @@ func parseIntervals(value string) ([]string, error) {
 	}
 
 	return intervals, nil
+}
+
+func coinsFromBinancePairs(pairMap map[string]string) []coingecko.Coin {
+	coins := make([]coingecko.Coin, 0, len(pairMap))
+	for baseAsset := range pairMap {
+		coins = append(coins, coingecko.Coin{
+			ID:     strings.ToLower(baseAsset),
+			Symbol: strings.ToLower(baseAsset),
+			Name:   strings.ToUpper(baseAsset),
+		})
+	}
+
+	// Deterministic order helps repeatable runs and easier debugging.
+	for i := 0; i < len(coins)-1; i++ {
+		for j := i + 1; j < len(coins); j++ {
+			if coins[j].Symbol < coins[i].Symbol {
+				coins[i], coins[j] = coins[j], coins[i]
+			}
+		}
+	}
+
+	return coins
 }

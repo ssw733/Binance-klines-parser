@@ -10,7 +10,7 @@
   "binance_enabled": true,
   "binance_base_url": "https://api.binance.com",
   "binance_request_delay_ms": 150,
-  "binance_interval": "1h,4h,1d",
+  "binance_interval": "4h,1d",
   "binance_quote_asset": "USDT",
   "postgres_dsn": "postgres://admin:admin@localhost:5432/coins?sslmode=disable",
   "min_start_date": "2017-01-01"

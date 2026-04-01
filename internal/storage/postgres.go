@@ -44,7 +44,6 @@ type RunInput struct {
 }
 
 var supportedIntervalTables = map[string]string{
-	"1h": "binance_klines_1h",
 	"4h": "binance_klines_4h",
 	"1d": "binance_klines_1d",
 }
@@ -292,30 +291,6 @@ CREATE TABLE IF NOT EXISTS coins (
 	updated_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS binance_klines_1h (
-	symbol_pair TEXT NOT NULL,
-	interval TEXT NOT NULL,
-	open_time TIMESTAMPTZ NOT NULL,
-	close_time TIMESTAMPTZ NOT NULL,
-	base_asset TEXT NOT NULL,
-	quote_asset TEXT NOT NULL,
-	coingecko_id TEXT REFERENCES coins(id) ON DELETE SET NULL,
-	open DOUBLE PRECISION NOT NULL,
-	high DOUBLE PRECISION NOT NULL,
-	low DOUBLE PRECISION NOT NULL,
-	close DOUBLE PRECISION NOT NULL,
-	volume DOUBLE PRECISION NOT NULL,
-	quote_asset_volume DOUBLE PRECISION NOT NULL,
-	trades BIGINT NOT NULL,
-	taker_buy_base_asset_volume DOUBLE PRECISION NOT NULL,
-	taker_buy_quote_asset_volume DOUBLE PRECISION NOT NULL,
-	run_id BIGINT NOT NULL REFERENCES ingestion_runs(id) ON DELETE CASCADE,
-	ingested_at TIMESTAMPTZ NOT NULL,
-	PRIMARY KEY (symbol_pair, interval, open_time)
-);
-
-CREATE INDEX IF NOT EXISTS idx_binance_1h_base_open_time ON binance_klines_1h(base_asset, open_time);
-
 CREATE TABLE IF NOT EXISTS binance_klines_4h (
 	symbol_pair TEXT NOT NULL,
 	interval TEXT NOT NULL,
@@ -366,7 +341,6 @@ CREATE INDEX IF NOT EXISTS idx_binance_1d_base_open_time ON binance_klines_1d(ba
 `
 
 const dropSchemaSQL = `
-DROP TABLE IF EXISTS binance_klines_1h;
 DROP TABLE IF EXISTS binance_klines_4h;
 DROP TABLE IF EXISTS binance_klines_1d;
 DROP TABLE IF EXISTS binance_klines;
